@@ -20,7 +20,7 @@ from . import FullDevice, SmartThingsConfigEntry
 from .const import MAIN
 from .entity import SmartThingsEntity
 
-SPEED_RANGE = (1, 3)  # off is not included
+DEFAULT_SPEED_RANGE = (1, 3)  # off is not included
 
 
 async def async_setup_entry(
@@ -39,6 +39,7 @@ async def async_setup_entry(
             for capability in (
                 Capability.FAN_SPEED,
                 Capability.AIR_CONDITIONER_FAN_MODE,
+                Capability.SAMSUNG_CE_HOOD_FAN_SPEED
             )
         )
         and Capability.THERMOSTAT_COOLING_SETPOINT not in device.status[MAIN]
@@ -49,7 +50,6 @@ class SmartThingsFan(SmartThingsEntity, FanEntity):
     """Define a SmartThings Fan."""
 
     _attr_name = None
-    _attr_speed_count = int_states_in_range(SPEED_RANGE)
 
     def __init__(self, client: SmartThings, device: FullDevice) -> None:
         """Init the class."""
@@ -63,26 +63,43 @@ class SmartThingsFan(SmartThingsEntity, FanEntity):
             },
         )
         self._attr_supported_features = self._determine_features()
+        self._attr_speed_count = int_states_in_range(get_speed_range())
+
 
     def _determine_features(self):
         flags = FanEntityFeature.TURN_OFF | FanEntityFeature.TURN_ON
 
         if self.supports_capability(Capability.FAN_SPEED):
             flags |= FanEntityFeature.SET_SPEED
+        if self.supports_capability(Capability.SAMSUNG_CE_HOOD_FAN_SPEED):
+            flags |= FanEntityFeature.SET_SPEED
         if self.supports_capability(Capability.AIR_CONDITIONER_FAN_MODE):
             flags |= FanEntityFeature.PRESET_MODE
 
         return flags
+
+    def determine_fan_capability(self):
+        if self.supports_capability(Capability.SAMSUNG_CE_HOOD_FAN_SPEED):
+            return Capability.SAMSUNG_CE_HOOD_FAN_SPEED
+        else:
+            Capability.FAN_SPEED
+    
+    def determine_fan_speed_command(self):
+        if self.supports_capability(Capability.SAMSUNG_CE_HOOD_FAN_SPEED):
+            return Command.SET_HOOD_FAN_SPEED
+        else:
+            Command.SET_FAN_SPEED
 
     async def async_set_percentage(self, percentage: int) -> None:
         """Set the speed percentage of the fan."""
         if percentage == 0:
             await self.execute_device_command(Capability.SWITCH, Command.OFF)
         else:
-            value = math.ceil(percentage_to_ranged_value(SPEED_RANGE, percentage))
+            value = math.ceil(percentage_to_ranged_value(get_speed_range(), percentage))
+
             await self.execute_device_command(
-                Capability.FAN_SPEED,
-                Command.SET_FAN_SPEED,
+                determine_fan_capability(),
+                determine_fan_speed_command(),
                 argument=value,
             )
 
@@ -113,6 +130,14 @@ class SmartThingsFan(SmartThingsEntity, FanEntity):
         """Turn the fan off."""
         await self.execute_device_command(Capability.SWITCH, Command.OFF)
 
+    def get_speed_range(self):
+        fan_capability = determine_fan_capability()
+        min_speed = self.get_attribute_value(fan_capability, Attribute.SETTABLE_MIN_FAN_SPEED)
+        # 0/Off doesn't count, we want min_speed to be the lowest possible speed.
+        if min_speed == 0:
+            min_speed = 1
+        max_speed = self.get_attribute_value(fan_capability, Attribute.SETTABLE_MAN_FAN_SPEED)
+        return (min_speed, max_speed) if min_speed is not none and max_speed is not none else DEFAULT_SPEED_RANGE
     @property
     def is_on(self) -> bool:
         """Return true if fan is on."""
@@ -122,8 +147,8 @@ class SmartThingsFan(SmartThingsEntity, FanEntity):
     def percentage(self) -> int | None:
         """Return the current speed percentage."""
         return ranged_value_to_percentage(
-            SPEED_RANGE,
-            self.get_attribute_value(Capability.FAN_SPEED, Attribute.FAN_SPEED),
+            get_speed_range(),
+            self.get_attribute_value(determine_fan_capability(), Attribute.FAN_SPEED),
         )
 
     @property
